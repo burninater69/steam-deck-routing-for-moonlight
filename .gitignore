@@ -1,0 +1,6 @@
+*.pid
+*.log
+receiver_out.txt
+receiver_err.txt
+recv_log.txt
+recv_err.txt

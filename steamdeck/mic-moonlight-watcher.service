@@ -1,0 +1,14 @@
+[Unit]
+Description=Mic stream watcher for Moonlight
+After=pipewire.service sound.target
+
+[Service]
+Type=simple
+ExecStart=/bin/bash /home/deck/mic-routing/moonlight_watcher.sh
+Restart=always
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=default.target

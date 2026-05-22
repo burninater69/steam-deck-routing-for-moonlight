@@ -1,0 +1,13 @@
+# Shell scripts and service files must keep LF endings for Linux/Steam Deck
+steamdeck/*.sh    text eol=lf
+steamdeck/*.service text eol=lf
+
+# Windows files use CRLF
+windows/*.ps1     text eol=crlf
+windows/*.bat     text eol=crlf
+windows/*.xml     text eol=crlf
+windows/*.py      text eol=lf
+
+# Docs and config
+*.md              text eol=lf
+.gitignore        text eol=lf
