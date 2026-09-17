@@ -107,3 +107,13 @@ Rule confirmed present and enabled.
 - Installed and working (confirmed via `mic_receiver.py --list-devices`)
 - Multiple CABLE devices appear due to multiple audio sessions; mic_receiver.py picks the first "CABLE Input" by name scan
 - **Fragile**: if VB-Audio adds a second CABLE pair, the wrong device could be selected silently. Verify with `python mic_receiver.py --list-devices` to confirm index in use.
+
+## Default-output guard (2026-09-17)
+If the Focusrite disappears (it is on a USB-C switcher shared with a laptop), Windows falls back to the VB-Audio cable as the default **playback** device. Because Sunshine streams the default output, that leaks PC audio into the mic and echoes your voice back to the Deck.
+
+`windows/audio_output_guard.ps1` runs as the scheduled task `AudioOutputGuard` (at logon, hidden, restart on failure). Every 2 s:
+- If the default or communications output is a VB-Audio device, it switches to Focusrite > Realtek Digital Output > any other non-virtual output.
+- When the Focusrite returns, it replaces the fallback it set, unless you've picked another device in the meantime.
+- It never reacts to other device changes.
+
+`start_receiver.ps1` also runs it once with `-Once` at stream start. Log: `C:\mic-routing\audio_output_guard.log`.

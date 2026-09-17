@@ -22,6 +22,10 @@ try {
     Log "FAIL: mic switch -> $($_.Exception.Message)"
 }
 
+# Make sure the VB-Audio cable is not the default OUTPUT before the stream starts (echo/leak).
+# The AudioOutputGuard task does this continuously; this closes the gap at stream start.
+try { & "C:\mic-routing\audio_output_guard.ps1" -Once } catch { Log "FAIL: output guard -> $($_.Exception.Message)" }
+
 # Kill any stale instance
 if (Test-Path $pidFile) {
     $old = Get-Content $pidFile -ErrorAction SilentlyContinue
