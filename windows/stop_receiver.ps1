@@ -1,15 +1,13 @@
 # stop_receiver.ps1 - launched by Sunshine when a stream ends
 $pidFile = "C:\mic-routing\receiver.pid"
 
-if (Test-Path $pidFile) {
-    $saved = Get-Content $pidFile -ErrorAction SilentlyContinue
-    if ($saved) { Stop-Process -Id ([int]$saved) -Force -ErrorAction SilentlyContinue }
-    Remove-Item $pidFile -Force -ErrorAction SilentlyContinue
-} else {
-    Get-WmiObject Win32_Process -Filter "Name='pythonw.exe'" |
-        Where-Object { $_.CommandLine -like '*mic_receiver*' } |
-        ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
-}
+# Remove the PID file FIRST: it is the "stream active" flag AudioOutputGuard uses to
+# restart a dead receiver, so it must be gone before the receiver is killed.
+Remove-Item $pidFile -Force -ErrorAction SilentlyContinue
+# Match by command line, never by saved PID (a dead receiver's PID can be reused).
+Get-CimInstance Win32_Process -Filter "Name='pythonw.exe' OR Name='python.exe'" |
+    Where-Object { $_.CommandLine -like '*mic_receiver.py*' } |
+    ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
 
 # Restore default recording device to Focusrite (runs under LocalSystem token —
 # module must be machine-wide; see start_receiver.ps1 note)

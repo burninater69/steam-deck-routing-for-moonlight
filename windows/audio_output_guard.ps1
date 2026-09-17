@@ -15,6 +15,10 @@
 # It only ever reacts to VB-Audio being the default; it does not fight other device changes
 # (e.g. Sunshine selecting Steam Streaming Speakers).
 #
+# While a stream is active (C:\mic-routing\receiver.pid exists) it also:
+#   - keeps the default MIC on CABLE Output (Windows moves it to the Focusrite on reconnect)
+#   - restarts mic_receiver.py if it has died (checked every ~10 s)
+#
 # Run: scheduled task "AudioOutputGuard" (at logon, hidden, via C:\Claude\run-hidden.vbs).
 #      start_receiver.ps1 also calls it with -Once at stream start.
 param(
@@ -78,10 +82,43 @@ if ($Once) {
 $mutex = New-Object System.Threading.Mutex($false, 'Global\AudioOutputGuard')
 if (-not $mutex.WaitOne(0)) { exit 0 }
 
+# Receiver watchdog. receiver.pid exists only while a stream is active (start_receiver.ps1
+# writes it, stop_receiver.ps1 deletes it). If it exists but no mic_receiver.py process is
+# running, the receiver died mid-stream (2026-09-17: killed as hung by Windows) - restart it.
+$pidFile = 'C:\mic-routing\receiver.pid'
+$script:lastRestart = [datetime]::MinValue
+function Check-Receiver {
+    if (-not (Test-Path $pidFile)) { return }
+    $alive = Get-CimInstance Win32_Process -Filter "Name='pythonw.exe' OR Name='python.exe'" |
+        Where-Object { $_.CommandLine -like '*mic_receiver.py*' }
+    if ($alive) { return }
+    if (((Get-Date) - $script:lastRestart).TotalSeconds -lt 30) { return }   # no restart storms
+    $script:lastRestart = Get-Date
+    Log "RECEIVER: stream active but mic_receiver.py is not running - restarting it"
+    & 'C:\mic-routing\start_receiver.ps1'
+}
+
+# While a stream is active, the default MIC must be CABLE Output (the Deck mic). Windows
+# re-points it at the Focusrite whenever that reconnects (USB-C switcher, 2026-09-17 08:51),
+# and start_receiver.ps1 only sets it once at stream start. Outside a stream: hands off.
+function Check-StreamMic {
+    if (-not (Test-Path $pidFile)) { return }
+    $rec   = @(Get-AudioDevice -List | Where-Object Type -eq 'Recording')
+    $cable = $rec | Where-Object Name -like 'CABLE Output*' | Select-Object -First 1
+    if (-not $cable) { return }
+    $def  = $rec | Where-Object Default
+    $comm = $rec | Where-Object DefaultCommunication
+    if ($def.ID -eq $cable.ID -and $comm.ID -eq $cable.ID) { return }
+    if (-not (Test-Path $pidFile)) { return }   # stream ended while we looked; stop_receiver owns the mic now
+    Set-AudioDevice -Id $cable.ID -ErrorAction Stop | Out-Null
+    Log "MIC: stream active, default mic was '$($def.Name)' / comms '$($comm.Name)' - set back to $($cable.Name)"
+}
+
 Log "START: guard running (pid $PID, every ${IntervalSec}s)"
 $lastErr = ''
+$tick = 0
 while ($true) {
-    try { Check; $lastErr = '' }
+    try { Check; Check-StreamMic; if (($tick++ % 5) -eq 0) { Check-Receiver }; $lastErr = '' }   # receiver every ~10 s
     catch {
         # Don't spam the log with the same error every 2 s
         if ($_.Exception.Message -ne $lastErr) { Log "ERR: $($_.Exception.Message)"; $lastErr = $_.Exception.Message }

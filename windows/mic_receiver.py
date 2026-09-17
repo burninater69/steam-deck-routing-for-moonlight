@@ -12,8 +12,14 @@ Usage:
     python mic_receiver.py
     python mic_receiver.py --port 4444 --rate 44100
     python mic_receiver.py --list-devices
+
+Under pythonw (how Sunshine starts it) there is no console, so output goes to
+C:\\mic-routing\\mic_receiver.log.
 """
 
+import ctypes
+import ctypes.wintypes
+import os
 import socket
 import pyaudio
 import sys
@@ -24,6 +30,40 @@ DEFAULT_PORT     = 4444
 DEFAULT_RATE     = 44100
 DEFAULT_CHANNELS = 1
 CHUNK            = 2048
+LOG_PATH         = r"C:\mic-routing\mic_receiver.log"
+LOG_MAX_BYTES    = 1_000_000
+
+
+def log(msg):
+    print(f"{time.strftime('%Y-%m-%d %H:%M:%S')}  {msg}", flush=True)
+
+
+def redirect_output_if_windowless():
+    # pythonw has no stdout/stderr: without this, a crash leaves no trace at all.
+    if sys.stdout is not None:
+        return
+    if os.path.exists(LOG_PATH) and os.path.getsize(LOG_PATH) > LOG_MAX_BYTES:
+        os.replace(LOG_PATH, LOG_PATH + ".old")
+    f = open(LOG_PATH, "a", encoding="utf-8", buffering=1)
+    sys.stdout = sys.stderr = f
+
+
+_user32 = ctypes.windll.user32
+_msg = ctypes.wintypes.MSG()
+
+
+def pump_messages():
+    """Dispatch pending window messages for this thread.
+
+    PortAudio's init leaves a hidden COM window (OleMainThreadWndClass) on the
+    main thread. If nobody pumps it, device-change notifications sent to it go
+    unanswered and Windows kills the process as hung (AppHang 1002). That is how
+    the receiver died at 2026-09-17 08:06, two minutes after an iPhone Bluetooth
+    hands-free device connected.
+    """
+    while _user32.PeekMessageW(ctypes.byref(_msg), None, 0, 0, 1):  # PM_REMOVE
+        _user32.TranslateMessage(ctypes.byref(_msg))
+        _user32.DispatchMessageW(ctypes.byref(_msg))
 
 
 def list_devices(p):
@@ -65,70 +105,81 @@ def find_vb_cable(p, rate, channels):
     return None
 
 
+def open_output(port_audio, rate, channels, device_index):
+    """Open the cable output stream, retrying until a usable device appears."""
+    while True:
+        idx = device_index if device_index is not None else find_vb_cable(port_audio, rate, channels)
+        if idx is not None:
+            try:
+                stream = port_audio.open(format=pyaudio.paInt16, channels=channels, rate=rate,
+                                         output=True, output_device_index=idx, frames_per_buffer=CHUNK)
+                name = port_audio.get_device_info_by_index(idx)["name"]
+                log(f"Output device : {name} (index {idx}), {rate} Hz, {channels} ch")
+                return stream
+            except OSError as e:
+                log(f"Could not open device {idx}: {e}")
+        else:
+            log("No usable VB-Audio cable output found; retrying in 5 s")
+        for _ in range(50):  # 5 s, still pumping messages
+            pump_messages()
+            time.sleep(0.1)
+
+
 def run(port, rate, channels, device_index=None):
     p = pyaudio.PyAudio()
-
-    if device_index is None:
-        device_index = find_vb_cable(p, rate, channels)
-        if device_index is None:
-            print("ERROR: VB-Audio CABLE Input device not found.")
-            print("       Install from https://vb-audio.com/Cable and reboot.")
-            list_devices(p)
-            p.terminate()
-            sys.exit(1)
-
-    dev_name = p.get_device_info_by_index(device_index)["name"]
-    print(f"[mic_receiver] Output device : {dev_name} (index {device_index})")
-    print(f"[mic_receiver] Sample rate   : {rate} Hz")
-    print(f"[mic_receiver] Channels      : {channels}")
-    print(f"[mic_receiver] UDP port      : {port}")
-    print()
-
-    stream = p.open(
-        format=pyaudio.paInt16,
-        channels=channels,
-        rate=rate,
-        output=True,
-        output_device_index=device_index,
-        frames_per_buffer=CHUNK,
-    )
+    stream = open_output(p, rate, channels, device_index)
 
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     sock.bind(("0.0.0.0", port))
-    sock.settimeout(1.0)
+    sock.settimeout(0.25)  # short, so messages get pumped even when no audio arrives
 
-    print(f"[mic_receiver] Listening on UDP 0.0.0.0:{port}")
-    print("[mic_receiver] Waiting for Steam Deck audio stream...")
-    print("               Press Ctrl-C to stop.\n")
+    log(f"Listening on UDP 0.0.0.0:{port} (pid {os.getpid()})")
 
     last_rx = None
     packets  = 0
 
     try:
         while True:
+            pump_messages()
             try:
                 data, addr = sock.recvfrom(CHUNK * 2)
             except socket.timeout:
                 if last_rx and time.time() - last_rx > 5:
-                    print("[mic_receiver] No data for 5 s — is stream_mic.sh still running?")
+                    log("No data for 5 s — is stream_mic.sh still running?")
                     last_rx = None
                 continue
 
             if last_rx is None:
-                print(f"[mic_receiver] Receiving audio from {addr[0]}:{addr[1]}")
+                log(f"Receiving audio from {addr[0]}:{addr[1]}")
 
-            stream.write(data)
+            try:
+                stream.write(data)
+            except OSError as e:
+                # Device vanished or re-enumerated: reopen instead of dying.
+                log(f"Write failed ({e}); reopening output device")
+                try:
+                    stream.close()
+                except Exception:
+                    pass
+                p.terminate()
+                p = pyaudio.PyAudio()
+                stream = open_output(p, rate, channels, device_index)
+                continue
+
             last_rx = time.time()
             packets += 1
 
-            if packets % 500 == 0:
-                print(f"[mic_receiver] {packets} packets received — stream healthy")
+            if packets % 5000 == 0:
+                log(f"{packets} packets received — stream healthy")
 
     except KeyboardInterrupt:
-        print(f"\n[mic_receiver] Stopped after {packets} packets.")
+        log(f"Stopped after {packets} packets.")
     finally:
-        stream.stop_stream()
-        stream.close()
+        try:
+            stream.stop_stream()
+            stream.close()
+        except Exception:
+            pass
         p.terminate()
         sock.close()
 
@@ -148,7 +199,13 @@ def main():
         p.terminate()
         sys.exit(0)
 
-    run(args.port, args.rate, args.channels, args.device)
+    redirect_output_if_windowless()
+    try:
+        run(args.port, args.rate, args.channels, args.device)
+    except Exception:
+        import traceback
+        log("FATAL:\n" + traceback.format_exc())
+        raise
 
 
 if __name__ == "__main__":

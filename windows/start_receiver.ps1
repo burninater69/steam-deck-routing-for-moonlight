@@ -26,12 +26,15 @@ try {
 # The AudioOutputGuard task does this continuously; this closes the gap at stream start.
 try { & "C:\mic-routing\audio_output_guard.ps1" -Once } catch { Log "FAIL: output guard -> $($_.Exception.Message)" }
 
-# Kill any stale instance
-if (Test-Path $pidFile) {
-    $old = Get-Content $pidFile -ErrorAction SilentlyContinue
-    if ($old) { Stop-Process -Id ([int]$old) -Force -ErrorAction SilentlyContinue }
-    Remove-Item $pidFile -Force -ErrorAction SilentlyContinue
-}
+# Kill any stale instance - matched by command line, never by the saved PID alone:
+# once the receiver has died, Windows can hand that PID to an unrelated process.
+Get-CimInstance Win32_Process -Filter "Name='pythonw.exe' OR Name='python.exe'" |
+    Where-Object { $_.CommandLine -like '*mic_receiver.py*' } |
+    ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
+Remove-Item $pidFile -Force -ErrorAction SilentlyContinue
 
 $proc = Start-Process -FilePath $pythonw -ArgumentList "`"$script`"" -WindowStyle Hidden -PassThru
+# receiver.pid doubles as "a stream is active": AudioOutputGuard restarts the receiver
+# while it exists, and stop_receiver.ps1 deletes it when the stream ends.
 $proc.Id | Out-File $pidFile -Encoding ascii
+Log "OK: receiver started (pid $($proc.Id))"

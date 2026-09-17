@@ -117,3 +117,9 @@ If the Focusrite disappears (it is on a USB-C switcher shared with a laptop), Wi
 - It never reacts to other device changes.
 
 `start_receiver.ps1` also runs it once with `-Once` at stream start. Log: `C:\mic-routing\audio_output_guard.log`.
+
+## Receiver killed as "hung", and the mic moving mid-stream (2026-09-17)
+- **Windows killed `pythonw` as hung** (Application log event 1002 / AppHangB1) shortly after a Bluetooth audio device connected. PortAudio's init leaves a hidden COM window on the main thread, and the receive loop never processed its messages. `mic_receiver.py` now pumps window messages every loop iteration. Measured: the hidden window answers in 22 ms, versus a 3 s timeout before. It also logs to `C:\mic-routing\mic_receiver.log` when run under pythonw, and reopens the audio device instead of exiting on a write error.
+- **Watchdog:** `receiver.pid` now means "a stream is active". `start_receiver.ps1` writes it, and `stop_receiver.ps1` deletes it before stopping the receiver. While it exists, `audio_output_guard.ps1` restarts a dead receiver within ~10 s.
+- **Mic enforcement:** when the Focusrite reconnects, Windows makes it the default mic, even mid-stream. While a stream is active, the guard keeps the default and communications mic on CABLE Output. Outside a stream it never touches the mic.
+- The start and stop scripts now find the receiver by command line instead of by saved PID, which Windows can reuse for an unrelated process.
