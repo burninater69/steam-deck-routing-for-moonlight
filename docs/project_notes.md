@@ -1,5 +1,13 @@
 # Steam Deck Mic Routing to Claude Desktop
 
+## 2026-09-17 outage: VB-Audio re-enumerated, receiver died silently
+- **Symptom:** dictation during a Moonlight stream typed nothing; nothing on the PC was listening on UDP 4444.
+- **Cause:** after a Windows update + GPU driver reboot, VB-Audio's endpoints came back with new IDs and names. The cable input now shows as "Speakers (2- VB-Audio Virtual Cable)". A new "CABLE In 16 Ch" endpoint appeared that refuses to open on any host API. `mic_receiver.py` matched only "CABLE Input" and exited silently under pythonw, and `start_receiver.ps1`'s hardcoded CABLE Output ID stopped matching.
+- **Fix:** `find_vb_cable()` tries every VB-Audio render endpoint (CABLE Input > Speakers* > other) and keeps the first one that actually opens. `start_receiver.ps1` looks CABLE Output up by name.
+- **Check:** `netstat -ano -p UDP | findstr 4444` must show the pythonw PID.
+- **Diagnostic trap:** the Deck mic reads exact digital zero in a quiet room (the filter-chain noise suppression gates it), so peak 0 does not mean a dead mic. Test with a tone from the Deck speaker (`pw-play`) while recording. Don't restart Deck PipeWire on a zero reading: that kills Moonlight's audio until you reconnect.
+- **Watch for:** if the normal output device (e.g. Focusrite) is missing, Windows may make the VB cable the default playback device. That recreates the echo loop described below.
+
 ## Purpose
 Stream the Steam Deck's internal microphone to the Windows PC over UDP, making it available as a virtual microphone to Claude Desktop during Moonlight streaming sessions. Everything starts and stops automatically — no manual steps per session.
 

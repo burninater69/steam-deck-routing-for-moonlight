@@ -37,11 +37,31 @@ def list_devices(p):
     print()
 
 
-def find_vb_cable(p):
+def find_vb_cable(p, rate, channels):
+    """Return the index of a VB-Audio Virtual Cable render endpoint that opens.
+
+    Don't trust the name alone: after the driver re-enumerated (2026-09-16) the
+    cable input came back as "Speakers (2- VB-Audio Virtual Cable)", while the
+    endpoint that still matched "CABLE In..." ("CABLE In 16 Ch") refuses to
+    open on every host API. So try each candidate and keep the first that works.
+    """
+    candidates = []
     for i in range(p.get_device_count()):
         info = p.get_device_info_by_index(i)
-        if "CABLE Input" in info["name"] and info["maxOutputChannels"] > 0:
+        name = info["name"]
+        if info["maxOutputChannels"] < channels or "VB-Audio" not in name or "Point" in name:
+            continue
+        # Classic name first, then the renamed endpoint, then anything else on the cable
+        rank = 0 if "CABLE Input" in name else 1 if name.startswith("Speakers") else 2
+        candidates.append((rank, i))
+    for _, i in sorted(candidates):
+        try:
+            s = p.open(format=pyaudio.paInt16, channels=channels, rate=rate,
+                       output=True, output_device_index=i, frames_per_buffer=CHUNK)
+            s.close()
             return i
+        except OSError:
+            continue
     return None
 
 
@@ -49,7 +69,7 @@ def run(port, rate, channels, device_index=None):
     p = pyaudio.PyAudio()
 
     if device_index is None:
-        device_index = find_vb_cable(p)
+        device_index = find_vb_cable(p, rate, channels)
         if device_index is None:
             print("ERROR: VB-Audio CABLE Input device not found.")
             print("       Install from https://vb-audio.com/Cable and reboot.")

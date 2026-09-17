@@ -12,8 +12,12 @@ function Log($m) { "$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')  $m" | Out-File $l
 # CurrentUser/OneDrive-scoped install is NOT visible here. See receiver.log.
 try {
     Import-Module AudioDeviceCmdlets -ErrorAction Stop
-    Set-AudioDevice -Id '{0.0.1.00000000}.{a0b9310c-2aa4-4ae3-8fcf-45776e11a61f}' -ErrorAction Stop | Out-Null
-    Log "OK: default recording device set to CABLE Output"
+    # Look CABLE Output up by name: its ID changes whenever VB-Audio re-enumerates
+    # (it did on 2026-09-16 and the hardcoded ID silently stopped matching).
+    $cable = Get-AudioDevice -List | Where-Object { $_.Type -eq 'Recording' -and $_.Name -like 'CABLE Output*' } | Select-Object -First 1
+    if (-not $cable) { throw "no recording device named 'CABLE Output*'" }
+    Set-AudioDevice -Id $cable.ID -ErrorAction Stop | Out-Null
+    Log "OK: default recording device set to $($cable.Name)"
 } catch {
     Log "FAIL: mic switch -> $($_.Exception.Message)"
 }
